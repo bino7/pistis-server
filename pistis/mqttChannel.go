@@ -6,8 +6,8 @@ import (
 
 type MqttChannel interface {
 	Topics() []string
-	Input() chan <- Message
-	Messages() <-chan Message
+	Input() chan <- *Message
+	Messages() <-chan *Message
 	Errors() <-chan error
 	Subscribe(topic string) error
 	UnSubscribe(topic string) error
@@ -17,8 +17,8 @@ type MqttChannel interface {
 type mqttChannel struct {
 	mqttClient *MQTT.Client
 	topics     []string
-	input      chan Message
-	messages   chan Message
+	input      chan *Message
+	messages   chan *Message
 	errors     chan error
 	done       chan bool
 }
@@ -29,12 +29,12 @@ func NewMqttChannel(server string) (*mqttChannel, error) {
 	c := &mqttChannel{
 		mqttClient:client,
 		topics:make([]string, 0),
-		input:make(chan Message),
-		messages:make(chan Message),
+		input:make(chan *Message),
+		messages:make(chan *Message),
 		errors:make(chan error),
 		done:make(chan bool),
 	}
-	if token := c.mqttClient.Connect(); token.Wait() && token.Error() {
+	if token := c.mqttClient.Connect(); token.Wait() && token.Error()!=nil {
 		return nil, token.Error()
 	}
 	started := make(chan bool)
@@ -44,7 +44,7 @@ func NewMqttChannel(server string) (*mqttChannel, error) {
 		for {
 			select {
 			case msg := <-c.input:
-				if token := c.mqttClient.Publish(msg.Topic(), msg.Qos(), msg.Retained(), msg.Payload()); token.Wait() && token.Error() != nil {
+				if token := c.mqttClient.Publish(msg.Topic(), msg.Qos(), msg.Retained(), msg.Marshal()); token.Wait() && token.Error() != nil {
 					c.errors <- token.Error()
 				}
 			case <-c.done:
@@ -53,17 +53,17 @@ func NewMqttChannel(server string) (*mqttChannel, error) {
 		}
 	}()
 	<-started
-	return c
+	return c,nil
 }
 
 func (c *mqttChannel)Topics() []string {
 	return c.topics
 }
 
-func (c *mqttChannel)Input() chan <- *MQTT.Message {
+func (c *mqttChannel)Input() chan <- *Message {
 	return c.input
 }
-func (c *mqttChannel)Messages() <-chan *MQTT.Message {
+func (c *mqttChannel)Messages() <-chan *Message {
 	return c.messages
 }
 

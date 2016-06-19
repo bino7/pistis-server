@@ -22,7 +22,7 @@ func startClient(name, mqttServer string) (*server, error) {
 	return c, nil
 }
 
-func handleTransmission(s *server, m Message) {
+/*func handleTransmission(s *server, m Message) {
 	ds := server(m.Dst)
 	if ds == nil {
 		dstNotOpen(s)
@@ -33,9 +33,9 @@ func handleTransmission(s *server, m Message) {
 
 func dstNotOpen(s *server) {
 
-}
+}*/
 
-func handleOffline(s *server, m Message) {
+func handleOffline(s *server, m *Message) {
 	mu.RLock()
 	defer func() {
 		mu.RUnlock()
@@ -45,7 +45,7 @@ func handleOffline(s *server, m Message) {
 	clients[s.name] = nil
 
 	for n, c := range clients {
-		c.mqttChannel.Input() <- Message{
+		c.mqttChannel.Input() <- &Message{
 			TimeStamp :time.Now().Unix(),
 			Type      :"offline",
 			Src       :"pistis",

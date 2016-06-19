@@ -11,46 +11,50 @@ type Server interface {
 	Name() string
 	Start() error
 	Stop() error
+	IsDone() bool
 	RegisterHandler(string, interface{})
 }
+
+type Handler func(*server, *Message)
 
 type server struct {
 	mqttServer  string
 	mqttChannel MqttChannel
 	name        string
-	input       chan Message
+	input       chan *Message
 	done        chan bool
-	handlers    map[string]interface{}
+	handlers    map[string]Handler
 	mu          sync.Mutex
 }
 
 func NewServer(name, mqttServer string) (*server, error) {
 	c, err := NewMqttChannel(mqttServer)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var mu sync.Mutex
 	return &server{
 		mqttServer:mqttServer,
 		mqttChannel:c,
 		name:name,
+		input:make(chan *Message),
 		done:make(chan bool),
-		handlers:make(map[string]interface{}),
+		handlers:make(map[string]Handler),
 		mu:mu,
-	}
+	}, nil
 }
 
 func (s *server)Name() string {
 	return s.name
 }
 
-func (s *server)Input() chan <- interface{} {
+func (s *server)Input() chan <- *Message {
 	return s.input
 }
 
 func (s *server)Start() {
 	started := make(chan bool)
-	s.mqttChannel.Subscribe()
+	s.mqttChannel.Subscribe(topic(s))
 	go func() {
 		started <- true
 		for {
@@ -67,17 +71,25 @@ func (s *server)Start() {
 	<-started
 }
 
+func topic(s *server) string {
+	if s.name == "pistis" {
+		return "pistis/m"
+	} else {
+		return fmt.Sprint("pistis/", s.name, "/m")
+	}
+}
+
 func (s *server)Stop() {
 	s.done <- true
 }
 
-func (s *server)RegisterHandler(t string, h interface{}) {
-	if s != "" && h != nil {
+func (s *server)RegisterHandler(t string, h Handler) {
+	if t != "" && h != nil {
 		s.handlers[t] = h
 	}
 }
 
-func (s *server)handle(m Message) {
+func (s *server)handle(m *Message) {
 	if m == nil {
 		return
 	}
@@ -88,9 +100,20 @@ func (s *server)handle(m Message) {
 	h(s, m)
 }
 
+func (s *server) IsDone() bool {
+	select {
+	case <-s.done:
+		return true
+
+	default:
+	}
+
+	return false
+}
+
 var pistis *server
 
-func Start(mqttServer string) {
+func Start(mqttServer string) *server {
 	s, e := NewServer("pistis", mqttServer)
 	if e != nil {
 		panic(e)
@@ -101,56 +124,44 @@ func Start(mqttServer string) {
 	s.RegisterHandler("open", open)
 	s.Start()
 	pistis = s
+	return s
 }
 
-func open(s *server, m Message) {
-	if server(m.Src) != nil {
+func open(s *server, m *Message) {
+	if client(m.Src) != nil {
 		return
 	}
 	c, e := startClient(m.Src, s.mqttServer)
 	if e != nil {
 		panic(e)
 	}
-	addClient(m.Src, c)
-	c.mqttChannel.Input() <- Message{
-		TimeStamp :time.Now().Unix(),
-		Type      :"opened",
-		Src       :"pistis",
-		Dst       :c.name,
-		Payload   :"",
-	}
 
 	cs := make([]string, 0)
-	cs = append(cs, c.Name())
-	payload, err := json.Marshal(cs)
+	for _, cl := range clients {
+		cs = append(cs, cl.name)
+	}
+	clientsJSON, err := json.Marshal(cs)
 	if err != nil {
 		panic(err)
 	}
 
-	mu.RLock()
-	defer mu.RUnlock()
+	addClient(c.name, c)
+	fmt.Println("new client", c.name)
 
-	for n, cl := range clients {
-		cl.mqttChannel.Input() <- Message{
-			TimeStamp :time.Now().Unix(),
-			Type      :"clients",
-			Src       :"pistis",
-			Dst       :cl.name,
-			Payload   :string(payload),
-		}
-		cs = append(cs, n)
-	}
-	payload, err = json.Marshal(cs)
-	if err != nil {
-		panic(err)
+	pistis.mqttChannel.Input() <- &Message{
+		TimeStamp :time.Now().Unix(),
+		Type      :"online",
+		Src       :"pistis",
+		Dst       :"pistis",
+		Payload   :c.name,
 	}
 
-	c.mqttChannel.Input() <- Message{
+	c.mqttChannel.Input() <- &Message{
 		TimeStamp :time.Now().Unix(),
 		Type      :"clients",
 		Src       :"pistis",
 		Dst       :c.name,
-		Payload   :string(payload),
+		Payload   :string(clientsJSON),
 	}
 
 }
@@ -170,6 +181,9 @@ func client(name string) *server {
 	return clients[name]
 }
 
+func (s *server)send(m *Message) {
+	s.mqttChannel.Input() <- m
+}
 
 
 
