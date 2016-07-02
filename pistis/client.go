@@ -3,37 +3,38 @@ package pistis
 import (
 	"fmt"
 	"time"
+	"github.com/google/cayley/quad"
+	"github.com/google/cayley"
+	g "github.com/google/cayley/graph"
+	"errors"
+)
+var(
+	NoClientError = errors.New("client not found")
 )
 
-func startClient(name, mqttServer string) (*server, error) {
-	c, e := NewServer(name, mqttServer)
+type Client struct {
+	UUID string
+	User string
+}
+
+func (c *Client) quads() []quad.Quad {
+	return []quad.Quad{
+		cayley.Quad(c.User, "client", c.UUID, ""),
+	}
+}
+
+func (c *Client) start(mqttServer string) (*server, error) {
+	s, e := NewServer(c.UUID,mqttServer)
 	if e != nil {
 		return nil, e
 	}
-	if e := c.mqttChannel.Subscribe(fmt.Sprint("pistis/", name, "/m")); e != nil {
+	if e := s.mqttChannel.Subscribe(fmt.Sprint("pistis/", c.UUID, "/m")); e != nil {
 		panic(e)
 	}
-	/*not needed*/
-	/*c.RegisterHandler("offer",handleTransmission)
-	c.RegisterHandler("candidate",handleTransmission)
-	c.RegisterHandler("answer",handleTransmission)*/
-	c.RegisterHandler("offline", handleOffline)
-	c.Start()
-	return c, nil
+	s.RegisterHandler("offline", handleOffline)
+	s.Start()
+	return s, nil
 }
-
-/*func handleTransmission(s *server, m Message) {
-	ds := server(m.Dst)
-	if ds == nil {
-		dstNotOpen(s)
-		return
-	}
-	ds.mqttChannel.Input() <- m
-}
-
-func dstNotOpen(s *server) {
-
-}*/
 
 func handleOffline(s *server, m *Message) {
 	mu.RLock()
@@ -53,5 +54,36 @@ func handleOffline(s *server, m *Message) {
 			Payload   :s.name,
 		}
 	}
-
 }
+
+func ClientUser(uuid string)(string,error){
+	p := cayley.StartPath(store, uuid).In("client")
+	it := p.BuildIterator()
+	defer it.Close()
+	if cayley.RawNext(it) {
+		username:=store.NameOf(it.Result())
+		return username,nil
+	}else{
+		return "",NoClientError
+	}
+}
+
+func (c *Client) Save() error {
+	if u,err:=ClientUser(c.UUID);err==NoClientError{
+		return store.AddQuadSet(c.quads())
+	}else if c.User!=u{
+		//update
+	}
+
+	return nil
+}
+
+func (c *Client) Remove() error{
+	tx:=g.NewTransaction()
+	for _,quad:=range c.quads(){
+		tx.RemoveQuad(quad)
+	}
+	return store.ApplyTransaction(tx)
+}
+
+
