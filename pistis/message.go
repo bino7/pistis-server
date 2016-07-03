@@ -11,7 +11,7 @@ type Message struct{
 	Type 			string
 	Src 			string
 	Dst 			string
-	Payload 	string
+	Payload 	interface{}
 }
 
 func (m *Message)Duplicate() bool{

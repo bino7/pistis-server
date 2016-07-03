@@ -6,12 +6,16 @@ import (
 	"time"
 	"encoding/json"
 )
-
+var(
+	mqtt_server string
+	root_server Server
+)
 type Server interface {
 	Name() string
 	Start() error
 	Stop() error
-	IsDone() bool
+	IsRunning() bool
+	Input() chan <- *Message
 	RegisterHandler(string, interface{})
 }
 
@@ -33,7 +37,7 @@ func NewServer(name, mqttServer string) (*server, error) {
 		return nil, err
 	}
 	var mu sync.Mutex
-	return &server{
+	s:= &server{
 		mqttServer:mqttServer,
 		mqttChannel:c,
 		name:name,
@@ -41,7 +45,15 @@ func NewServer(name, mqttServer string) (*server, error) {
 		done:make(chan bool),
 		handlers:make(map[string]Handler),
 		mu:mu,
-	}, nil
+	}
+
+	if name=="pistis" {
+		err = s.mqttChannel.Subscribe(fmt.Sprint("pistis/m"))
+	}else{
+		err = s.mqttChannel.Subscribe(fmt.Sprint("pistis/",s.Name(),"/m"))
+	}
+
+	return s,err
 }
 
 func (s *server)Name() string {
@@ -54,7 +66,6 @@ func (s *server)Input() chan <- *Message {
 
 func (s *server)Start() {
 	started := make(chan bool)
-	s.mqttChannel.Subscribe(topic(s))
 	go func() {
 		started <- true
 		for {
@@ -71,12 +82,8 @@ func (s *server)Start() {
 	<-started
 }
 
-func topic(s *server) string {
-	if s.name == "pistis" {
-		return "pistis/m"
-	} else {
-		return fmt.Sprint("pistis/", s.name, "/m")
-	}
+func (s *server)topic() string {
+	return "pistis/m"
 }
 
 func (s *server)Stop() {
@@ -100,91 +107,74 @@ func (s *server)handle(m *Message) {
 	h(s, m)
 }
 
-func (s *server) IsDone() bool {
+func (s *server) IsRunning() bool {
 	select {
 	case <-s.done:
 		return true
-
 	default:
 	}
-
 	return false
 }
 
-var pistis *server
-
 func Start(mqttServer string) *server {
-	s, e := NewServer("pistis", mqttServer)
-	if e != nil {
-		panic(e)
-	}
-	if e := s.mqttChannel.Subscribe("pistis/m"); e != nil {
-		panic(e)
-	}
-	s.RegisterHandler("open", open)
-	s.Start()
-	pistis = s
-	return s
-}
+	mqtt_server=mqttServer
 
-func open(s *server, m *Message) {
-	if client(m.Src) != nil {
-		return
-	}
-	c, e := startClient(m.Src, s.mqttServer)
-	if e != nil {
-		panic(e)
-	}
-
-	cs := make([]string, 0)
-	for _, cl := range clients {
-		cs = append(cs, cl.name)
-	}
-	clientsJSON, err := json.Marshal(cs)
+	s, err := NewServer("pistis", mqtt_server)
 	if err != nil {
 		panic(err)
 	}
-
-	addClient(c.name, c)
-	fmt.Println("new client", c.name)
-
-	pistis.mqttChannel.Input() <- &Message{
-		TimeStamp :time.Now().Unix(),
-		Type      :"online",
-		Src       :"pistis",
-		Dst       :"pistis",
-		Payload   :c.name,
+	if err := s.mqttChannel.Subscribe("pistis/m"); err != nil {
+		panic(err)
 	}
+	s.RegisterHandler("open", func(s *server, m *Message){
+		type OpenMsg struct {
+			Username 	string
+			Token 	 	string
+		}
+		jsonbyte:=([]byte)(m.Payload.(string))
+		openMsg:=OpenMsg{"",""}
+		if err:=json.Unmarshal(jsonbyte,m);err!=nil{
+			s.send(&Message{
+				TimeStamp :time.Now().Unix(),
+				Type      :"error",
+				Src       :"pistis",
+				Dst       :m.Src,
+				Payload   :err.Error(),
+			})
+		}
 
-	c.mqttChannel.Input() <- &Message{
-		TimeStamp :time.Now().Unix(),
-		Type      :"clients",
-		Src       :"pistis",
-		Dst       :c.name,
-		Payload   :string(clientsJSON),
-	}
+		if !checkToken(openMsg.Token) {
+			s.send(&Message{
+				TimeStamp :time.Now().Unix(),
+				Type      :"forbidden",
+				Src       :"pistis",
+				Dst       :m.Src,
+				Payload   :"token is not Valid",
+			})
+		}
 
-}
+		u,err:=getUser(openMsg.Username)
+		if err!=nil {
+			s.send(&Message{
+				TimeStamp :time.Now().Unix(),
+				Type      :"error",
+				Src       :"pistis",
+				Dst       :m.Src,
+				Payload   :err.Error(),
+			})
+		}
 
-var clients = make(map[string]*server)
-var mu sync.RWMutex
+		u.Input() <- m
+	})
 
-func addClient(name string, s *server) {
-	mu.Lock()
-	defer mu.Unlock()
-	clients[name] = s
-}
-
-func client(name string) *server {
-	mu.RLock()
-	defer mu.RUnlock()
-	return clients[name]
+	s.Start()
+	root_server=s
+	return s
 }
 
 func (s *server)send(m *Message) {
 	s.mqttChannel.Input() <- m
 }
-
 
 
 
