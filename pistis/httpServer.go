@@ -28,7 +28,8 @@ func startHttpServer(serverLocation,frontendServer string){
 	m.Use(cors.Allow(&cors.Options{
 		AllowOrigins:     []string{frontendServer},
 		AllowMethods:     []string{"POST", "GET", "PUT", "DELETE"},
-		AllowHeaders:     []string{"Content-Type","Content-Range","Content-Disposition", "Content-Description", "Accept", "Authorization","Set-Cookie",},
+		AllowHeaders:     []string{"Content-Type","Content-Range","Content-Disposition", "Content-Description", "Accept",
+			"Authorization","Set-Cookie",},
 		ExposeHeaders:    []string{"Authorization","Set-Cookie",},
 		AllowCredentials: true,
 	}))
