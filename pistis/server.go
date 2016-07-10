@@ -4,7 +4,6 @@ import (
 	"sync"
 	"fmt"
 	"time"
-	"encoding/json"
 )
 var(
 	mqtt_server string
@@ -16,7 +15,7 @@ type Server interface {
 	Stop() error
 	IsRunning() bool
 	Input() chan <- *Message
-	RegisterHandler(string, interface{})
+	RegisterHandler(string, Handler)
 }
 
 type Handler func(*server, *Message)
@@ -64,7 +63,7 @@ func (s *server)Input() chan <- *Message {
 	return s.input
 }
 
-func (s *server)Start() {
+func (s *server)Start() error{
 	started := make(chan bool)
 	go func() {
 		started <- true
@@ -80,14 +79,16 @@ func (s *server)Start() {
 		}
 	}()
 	<-started
+	return nil
 }
 
 func (s *server)topic() string {
 	return "pistis/m"
 }
 
-func (s *server)Stop() {
+func (s *server)Stop() error{
 	s.done <- true
+	return nil
 }
 
 func (s *server)RegisterHandler(t string, h Handler) {
@@ -117,6 +118,10 @@ func (s *server) IsRunning() bool {
 }
 
 func Start(mqttServer string) *server {
+	err:=initStore()
+	if err!=nil {
+		panic(err)
+	}
 	mqtt_server=mqttServer
 
 	s, err := NewServer("pistis", mqtt_server)
@@ -127,33 +132,7 @@ func Start(mqttServer string) *server {
 		panic(err)
 	}
 	s.RegisterHandler("open", func(s *server, m *Message){
-		type OpenMsg struct {
-			Username 	string
-			Token 	 	string
-		}
-		jsonbyte:=([]byte)(m.Payload.(string))
-		openMsg:=OpenMsg{"",""}
-		if err:=json.Unmarshal(jsonbyte,m);err!=nil{
-			s.send(&Message{
-				TimeStamp :time.Now().Unix(),
-				Type      :"error",
-				Src       :"pistis",
-				Dst       :m.Src,
-				Payload   :err.Error(),
-			})
-		}
-
-		if !checkToken(openMsg.Token) {
-			s.send(&Message{
-				TimeStamp :time.Now().Unix(),
-				Type      :"forbidden",
-				Src       :"pistis",
-				Dst       :m.Src,
-				Payload   :"token is not Valid",
-			})
-		}
-
-		u,err:=getUser(openMsg.Username)
+		u,err:=getUser(m.Src)
 		if err!=nil {
 			s.send(&Message{
 				TimeStamp :time.Now().Unix(),
@@ -162,6 +141,7 @@ func Start(mqttServer string) *server {
 				Dst       :m.Src,
 				Payload   :err.Error(),
 			})
+			return
 		}
 
 		u.Input() <- m
@@ -169,6 +149,7 @@ func Start(mqttServer string) *server {
 
 	s.Start()
 	root_server=s
+	fmt.Println("server stared")
 	return s
 }
 

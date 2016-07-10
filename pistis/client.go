@@ -10,7 +10,8 @@ import (
 	"github.com/dgrijalva/jwt-go"
 	"sync"
 )
-var(
+
+var (
 	NoClientError = errors.New("client not found")
 )
 
@@ -19,9 +20,9 @@ var clients_mu sync.RWMutex
 
 type Client struct {
 	*server
-	UUID 			string
-	Username 	string
-	user 			*User
+	UUID     string
+	Username string
+	user     *User
 }
 
 func (c *Client) quads() []quad.Quad {
@@ -31,20 +32,22 @@ func (c *Client) quads() []quad.Quad {
 }
 
 func (c *Client) ensureRunning() error {
-	s := c.server
-	if s==nil {
-		s1, err := NewServer(fmt.Sprint(c.Username,"/",c.UUID),mqtt_server)
+
+	if c.server == nil {
+		s, err := NewServer(fmt.Sprint(c.Username, "/", c.UUID), mqtt_server)
 		if err != nil {
 			return err
 		}
-		if err := s.mqttChannel.Subscribe(fmt.Sprint("pistis/", s1.Name(), "/m")); err != nil {
+		if err := s.mqttChannel.Subscribe(fmt.Sprint("pistis/", s.Name(), "/m")); err != nil {
 			return err
 		}
 		s.RegisterHandler("offline", handleOffline)
-		c.server=s
+		c.server = s
 	}
 
-	if s.IsRunning()==false {
+	s := c.server
+
+	if s.IsRunning() == false {
 		s.Start()
 	}
 
@@ -71,44 +74,66 @@ func handleOffline(s *server, m *Message) {
 	}
 }
 
-func checkClient(uuid,username string) bool{
-	p := cayley.StartPath(store, username).Out("clients")
+func checkClient(uuid, username string) bool {
+	p := cayley.StartPath(store, username).Out("client")
 	it := p.BuildIterator()
 	defer it.Close()
 	if cayley.RawNext(it) {
-		c:=store.NameOf(it.Result())
-		return uuid==c
+		c := store.NameOf(it.Result())
+		if uuid == c {
+			return true
+		}
 	}
 	return false
 }
 
-func getClient(uuid string)(*Client,error){
-	c:=clients[uuid]
-	if c==nil {
+func getClient(uuid string) (*Client, error) {
+	c := clients[uuid]
+	if c == nil {
 		p := cayley.StartPath(store, uuid).In("client")
 		it := p.BuildIterator()
 		defer it.Close()
 		if cayley.RawNext(it) {
-			username:=store.NameOf(it.Result())
-			c=&Client{uuid,username}
+			username := store.NameOf(it.Result())
+			c = &Client{UUID:uuid, Username:username}
 			clients_mu.Lock()
 			defer clients_mu.Unlock()
 			clients[uuid] = c
-		}else{
-			return nil,NoClientError
+		} else {
+			return nil, NoClientError
 		}
 	}
 	err := c.ensureRunning()
-	return c,err
+	return c, err
 }
 
 func (c *Client) save() error {
-	if u,err:=c.user();err==NoClientError{
-		return store.AddQuadSet(c.quads())
-	}else if c.Username!=u.Username{
-		//update
+	if !checkUserName(c.Username) {
+		return NoUserError
 	}
-	if clients[c.UUID]==nil{
+
+	tx:=cayley.NewTransaction()
+	if checkClient(c.UUID,c.Username)==false{
+		p := cayley.StartPath(store, c.UUID).Out(c.Username)
+		it := p.BuildIterator()
+		defer it.Close()
+		if cayley.RawNext(it) {
+			un := store.NameOf(it.Result())
+			if un != c.Username {
+				store.RemoveQuad(cayley.Quad(un, "client", c.UUID, ""))
+				u, _ := getUser(un)
+				if u != nil {
+					u.clients[c.UUID] = nil
+				}
+			}
+		}
+		/*store.AddQuadSet(c.quads())*/
+		return store.ApplyTransaction(tx)
+	}
+
+
+
+	if clients[c.UUID] == nil {
 		clients_mu.Lock()
 		defer clients_mu.Unlock()
 		clients[c.UUID] = c
@@ -116,35 +141,30 @@ func (c *Client) save() error {
 	return nil
 }
 
-func (c *Client) remove() error{
-	tx:=g.NewTransaction()
-	for _,quad:=range c.quads(){
+func (c *Client) remove() error {
+	tx := g.NewTransaction()
+	for _, quad := range c.quads() {
 		tx.RemoveQuad(quad)
 	}
 	return store.ApplyTransaction(tx)
 }
 
-func (c *Client) token() (*jwt.Token,error){
-	u,err:=c.user()
-	if err!=nil {
-		return nil,err
-	}
-	token := jwt.New(jwt.SigningMethodRS256)
-	token.Claims = map[string]interface{}{
-		"uuid":c.UUID,
-		"username":u.Username,
-		"password":u.Password,
-	}
-	return token,nil
+func (c *Client) token() (*jwt.Token, error) {
+	u := c.user
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, MyClaims{
+		uuid: "c.UUID",
+		username: u.Username,
+		password:u.Password,
+	})
+	return token, nil
 }
 
-func (c *Client) sendUserOnlineMsg(){
-		clients[c.UUID]
-		c.mqttChannel.Input() <- &Message{
-			TimeStamp :time.Now().Unix(),
-			Type      :"user-online",
-			Src       :"pistis",
-			Dst       :c.topic(),
-			Payload   :c.user.Username,
-		}
+func (c *Client) sendUserOnlineMsg() {
+	c.mqttChannel.Input() <- &Message{
+		TimeStamp :time.Now().Unix(),
+		Type      :"user-online",
+		Src       :"pistis",
+		Dst       :c.topic(),
+		Payload   :c.user.Username,
+	}
 }

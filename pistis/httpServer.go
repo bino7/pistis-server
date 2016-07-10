@@ -1,7 +1,6 @@
 package pistis
 
 import (
-	"fmt"
 	"github.com/go-martini/martini"
 	"github.com/martini-contrib/cors"
 	"github.com/martini-contrib/render"
@@ -11,8 +10,7 @@ var(
 	httpServerURL string
 )
 
-func startHttpServer(serverLocation,frontendServer string){
-	httpServerURL=serverLocation
+func StartHttpServer(frontendServer string){
 
 	m := martini.Classic()
 
@@ -28,15 +26,11 @@ func startHttpServer(serverLocation,frontendServer string){
 	m.Use(cors.Allow(&cors.Options{
 		AllowOrigins:     []string{frontendServer},
 		AllowMethods:     []string{"POST", "GET", "PUT", "DELETE"},
-		AllowHeaders:     []string{"Content-Type","Content-Range","Content-Disposition", "Content-Description", "Accept",
-			"Authorization","Set-Cookie",},
+		AllowHeaders:     []string{"Content-Type","Content-Range","Content-Disposition", "Accept","Authorization","Set-Cookie",},
 		ExposeHeaders:    []string{"Authorization","Set-Cookie",},
 		AllowCredentials: true,
 	}))
 
-	m.Use(func(){
-		fmt.Println("haha")
-	})
 	m.Use(Authenticator)
 	//m.Use(pistis.CDNServer)
 	m.Use(render.Renderer(render.Options{

@@ -1,18 +1,22 @@
 package pistis
 
 import (
-	"github.com/google/cayley"
 	"log"
+	"github.com/google/cayley"
+	"github.com/google/cayley/graph"
+	"github.com/google/cayley/graph/bolt"
 )
 
 var (
 	store_name = "bolt"
-	store_path = "pistis.db"
+	store_path = "ppl.db"
 	store *cayley.Handle
 )
 
 func initStore() error {
-	s, err := cayley.NewGraph(store_name, store_path, nil)
+	bolt.Init()
+	graph.InitQuadStore("bolt", store_path, nil)
+	s, err := cayley.NewGraph("bolt", store_path, nil)
 	if err != nil {
 		log.Fatal(err)
 		return err

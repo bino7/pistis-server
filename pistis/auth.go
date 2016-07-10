@@ -11,10 +11,11 @@ import (
 	"fmt"
 	"encoding/json"
 	"errors"
+	"log"
 )
 
 var RSA_KEY = func() []byte {
-	key, e := ioutil.ReadFile("RSA")
+	key, e := ioutil.ReadFile("pistis.cn.key")
 	if e != nil {
 		panic(e.Error())
 	}
@@ -22,7 +23,7 @@ var RSA_KEY = func() []byte {
 }()
 
 var RSA_PUB = func() []byte {
-	key, e := ioutil.ReadFile("RSA.pub")
+	key, e := ioutil.ReadFile("pistis.cn.public.key")
 	if e != nil {
 		panic(e.Error())
 	}
@@ -45,37 +46,28 @@ var (
 )
 
 func (c MyClaims) Valid() error {
-	cl, err := getClient(c.uuid)
-	if err != nil {
-		return err
+	if checkUser(c.username, c.password) && checkClient(c.uuid, c.username) {
+		return nil
 	}
-	u, err := cl.user()
-	if err != nil {
-		return err
-	}
-	if u.Username != u.Username {
-		return TokenNotForTheUserError
-	}
-	if u.Password != u.Password {
-		return TokenPasswordNotRightError
-	}
-	return nil
+	return jwt.ErrInvalidKey
 }
 
 func KeyFunc(token *jwt.Token) (interface{}, error) {
-	err := token.Claims.Valid()
-	return err == nil, err;
+	if token.Valid {
+		return nil, jwt.ValidationError{}
+	}
+	return nil, nil
 }
 
 var Authenticator = func(c martini.Context, req *http.Request, res http.ResponseWriter) {
 	token, _ := req.Cookie("Authorization")
 	fmt.Println(token)
-	fmt.Println(req.Header.Get("Authorization"))
 	if req.RequestURI != "/auth" && req.RequestURI != "/register" {
 
-		token:=req.Header.Get("token")
+		token := req.Header.Get("token")
 
 		if !checkToken(token) {
+			fmt.Println("check token failed")
 			res.WriteHeader(http.StatusForbidden)
 			return
 		}
@@ -84,15 +76,19 @@ var Authenticator = func(c martini.Context, req *http.Request, res http.Response
 
 func checkToken(token string) bool {
 	t, err := jwt.Parse(token, KeyFunc)
+	return err == nil && t.Valid
+}
 
+func checkTokenWithTokenInfo(token, uuid, username string) bool {
+	t, err := jwt.Parse(token, KeyFunc)
 	if err != nil || !t.Valid {
 		return false
 	}
-
-	claims:=t.Claims.(MyClaims)
-
-	return checkUser(claims.username,claims.password) && checkClient(claims.uuid,claims.username)
+	c := t.Claims.(MyClaims)
+	return c.uuid == uuid && c.username == username
 }
+
+
 
 /*rest server*/
 type Auth struct {
@@ -110,24 +106,9 @@ func AuthServer(r martini.Router) {
 	})
 }
 
-func auth(auth Auth, r render.Render) {
+func auth(auth Auth, r render.Render, req *http.Request) {
 
-	fmt.Println("auth")
-
-	if auth.Username == "" || auth.Email == "" {
-		r.Text(http.StatusBadRequest, "username and email can't both be empty")
-		return
-	}
-
-	if auth.Password == "" {
-		r.Text(http.StatusBadRequest, "password can't both be empty")
-		return
-	}
-
-	username := auth.Username
-	if username == "" {
-		username = getUsername(auth.Email)
-	}
+	log.Println("auth", auth)
 
 	type AuthResult struct {
 		Result  bool
@@ -135,51 +116,69 @@ func auth(auth Auth, r render.Render) {
 		Token   string
 	}
 
-	var result = func(result bool, message string, token *jwt.Token) {
-		signedString, err := token.SignedString(RSA_KEY)
-		if err != nil {
-			r.Text(http.StatusInternalServerError, err.Error())
-		}
-		res := AuthResult{result, message, signedString}
-		if jsonbyte, err := json.Marshal(res); err != nil {
-			r.Text(http.StatusInternalServerError, err.Error())
-		} else {
-			if result {
-				r.Text(http.StatusOK, string(jsonbyte))
+	var result = func(status int, result bool, message string, token *jwt.Token) {
+		signedString := ""
+		if token != nil {
+			s, err := token.SignedString(RSA_KEY)
+
+			if err != nil {
+				panic(err.Error())
 			} else {
-				r.Text(http.StatusConflict, string(jsonbyte))
+				signedString = s
 			}
 		}
+
+		res := AuthResult{result, message, signedString}
+
+		if jsonbyte, err := json.Marshal(res); err != nil {
+			panic(err.Error())
+		} else {
+			r.Text(status, string(jsonbyte))
+		}
+	}
+
+	if auth.Username == "" && auth.Email == "" {
+		result(http.StatusBadRequest, false, "username and email can't both be empty", nil)
+		return
+	}
+
+	if auth.Password == "" {
+		log.Println(http.StatusBadRequest, "password can't be empty")
+		result(http.StatusBadRequest, false, "password can't be empty", nil)
+		return
+	}
+
+	username := auth.Username
+	if username == "" {
+		username, _ = getUsername(auth.Email)
 	}
 
 	u, err := getUser(username)
 	if err != nil {
-		result(false, err.Error(), nil)
+		result(http.StatusConflict, false, "can not find user", nil)
 		return
 	}
 
 	if auth.Password != u.Password {
-		result(false, err.Error(), nil)
+		log.Println(auth.Password,u.Password)
+		result(http.StatusConflict, false, "password not matched", nil)
 		return
 	}
 
 	c := &Client{UUID:auth.UUID, Username:auth.Username, user:u}
 	err = c.save()
 	if err != nil {
-		r.Text(http.StatusInternalServerError, err.Error())
-		return
-	} else {
-		result(false, err.Error(), nil)
+		result(http.StatusInternalServerError, false, "failed to start client", nil)
 		return
 	}
 
 	token, err := c.token()
 	if err != nil {
-		r.Text(http.StatusInternalServerError, err.Error())
+		result(http.StatusInternalServerError, false, "failed to create token", nil)
 		return
 	}
 
-	result(http.StatusOK, "ok", token)
+	result(http.StatusOK, true, "ok", token)
 
 	u.sendOnlineMsg()
 }
@@ -194,48 +193,60 @@ type Registration struct {
 }
 
 func register(reg Registration, r render.Render) {
-
+	log.Println(reg)
 	type RegistrationResult struct {
 		Result  bool
 		Message string
 		Token   string
 	}
 
-	var result = func(result bool, message string, token *jwt.Token) {
-		signedString, err := token.SignedString(RSA_KEY)
-		if err != nil {
-			r.Text(http.StatusInternalServerError, err.Error())
+	var result = func(status int, result bool, message string, token *jwt.Token) {
+		signedString := ""
+		if token != nil {
+			s, err := token.SignedString(RSA_KEY)
+
+			if err != nil {
+				panic(err.Error())
+			} else {
+				signedString = s
+			}
 		}
+
 		res := RegistrationResult{result, message, signedString}
 		if jsonbyte, err := json.Marshal(res); err != nil {
-			r.Text(http.StatusInternalServerError, err.Error())
+			panic(err.Error())
 		} else {
-			if result {
-				r.Text(http.StatusOK, string(jsonbyte))
-			} else {
-				r.Text(http.StatusConflict, string(jsonbyte))
-			}
+			r.Text(status, string(jsonbyte))
 		}
 	}
 
-	u := &User{Email:reg.Email, Password:reg.Password, Username:reg.Username, clients:make(map[string]*Client)}
-	fmt.Println(reg)
+	u := &User{Email:reg.Email,
+		Password:reg.Password,
+		Username:reg.Username,
+		clients:make(map[string]*Client),
+		contacts:make(map[string]*User)}
+
+	if checkUserName(u.Username) || checkUserEmail(u.Email) {
+		result(http.StatusNotAcceptable, false, "username or email exited", nil)
+		return
+	}
+
 	err := u.save()
 	if err != nil {
-		r.Text(http.StatusConflict, err.Error())
+		result(http.StatusInternalServerError, false, "", nil)
 		return
 	}
 
 	err = u.ensureRunning()
 	if err != nil {
-		r.Text(http.StatusInternalServerError, err.Error())
+		result(http.StatusInternalServerError, false, "", nil)
 		return
 	}
 
 	c := &Client{UUID:reg.UUID, Username:reg.Username, user:u}
 	err = c.save()
 	if err != nil {
-		r.Text(http.StatusInternalServerError, err.Error())
+		result(http.StatusInternalServerError, false, "", nil)
 		return
 	}
 
@@ -243,11 +254,11 @@ func register(reg Registration, r render.Render) {
 
 	token, err := c.token()
 	if err != nil {
-		r.Text(http.StatusInternalServerError, err.Error())
+		result(http.StatusInternalServerError, false, "create token error", nil)
 		return
 	}
 
-	result(http.StatusOK, "ok", token)
+	result(http.StatusCreated, true, "", token)
 }
 
 

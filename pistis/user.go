@@ -7,7 +7,6 @@ import (
 	"errors"
 	"encoding/json"
 	"time"
-	"github.com/dgrijalva/jwt-go"
 )
 
 var (
@@ -27,34 +26,40 @@ type User struct {
 	contacts map[string] *User
 }
 
+func newUser(username,password,email,tel string) *User{
+	return &User{
+		Username :username,
+		Password :password,
+		Email    :email,
+		Tel      :tel,
+		clients  :make(map[string] *Client),
+		contacts :make(map[string] *User),
+	}
+}
+
 func (u *User) ensureRunning() error{
-	s:=u.server
-	if s==nil {
+	if u.server==nil {
 		s,err:=NewServer(u.Username,mqtt_server)
 		if err!=nil {
 			return err
 		}
 		u.server=s
 
-		s.RegisterHandler("client-opened",func(s *server,m *Message){
-			c:=m.Payload.(*Client)
-			u.clients[c.UUID]=c
-		})
-		s.RegisterHandler("client-closed",func(s *server,m *Message){
-			c:=m.Payload.(*Client)
-			u.clients[c.UUID]=nil
-		})
-		s.RegisterHandler("online",func(s *server,m *Message){
-
-		})
-		s.RegisterHandler("open",func(s *server, m *Message) {
-			type OpenMsg struct {
-				Username 	string
-				Token 	 	string
-			}
+		type ClientMsg struct {
+			UUID			string
+			Username 	string
+			Token 	 	string
+		}
+		parseClientMsg:=func(m *Message) (*ClientMsg,error){
 			jsonbyte:=([]byte)(m.Payload.(string))
-			openMsg:=OpenMsg{"",""}
-			if err:=json.Unmarshal(jsonbyte,m);err!=nil{
+			msg:=&ClientMsg{"","",""}
+			err:=json.Unmarshal(jsonbyte,m)
+			return msg,err
+		}
+
+		s.RegisterHandler("open",func(s *server, m *Message) {
+			msg,err:=parseClientMsg(m)
+			if err!=nil{
 				s.send(&Message{
 					TimeStamp :time.Now().Unix(),
 					Type      :"error",
@@ -62,10 +67,10 @@ func (u *User) ensureRunning() error{
 					Dst       :m.Src,
 					Payload   :err.Error(),
 				})
+				return
 			}
 
-			token,_:=jwt.Parse(openMsg.Token,KeyFunc)
-			if !token.Valid {
+			if !checkToken(msg.Token) {
 				s.send(&Message{
 					TimeStamp :time.Now().Unix(),
 					Type      :"error",
@@ -73,10 +78,57 @@ func (u *User) ensureRunning() error{
 					Dst       :m.Src,
 					Payload   :"token is not valid",
 				})
+				return
+			}
+
+			c,_:=getClient(msg.UUID)
+			if c==nil {
+				c=&Client{UUID:msg.UUID,Username:msg.Username}
+				c.ensureRunning()
+			}
+
+		})
+
+		s.RegisterHandler("close",func(s *server,m *Message){
+			msg,err:=parseClientMsg(m)
+			if err!=nil{
+				s.send(&Message{
+					TimeStamp :time.Now().Unix(),
+					Type      :"error",
+					Src       :"pistis",
+					Dst       :m.Src,
+					Payload   :err.Error(),
+				})
+				return
+			}
+
+			if !checkToken(msg.Token) {
+				s.send(&Message{
+					TimeStamp :time.Now().Unix(),
+					Type      :"error",
+					Src       :"pistis",
+					Dst       :m.Src,
+					Payload   :"token is not valid",
+				})
+				return
+			}
+
+			c,_:=getClient(msg.UUID)
+			if c!=nil {
+				c.Stop()
+				u.clients[msg.UUID]=nil
 			}
 		})
-	}
 
+		s.RegisterHandler("add-contact",func(s *server,m *Message){
+			
+		})
+
+		s.RegisterHandler("remove-contact",func(s *server,m *Message){
+
+		})
+	}
+	s := u.server
 	if s.IsRunning()==false {
 		s.Start()
 	}
@@ -103,14 +155,14 @@ func checkUser(username,password string) bool {
 	return false
 }
 
-func CheckUserEmail(email string) bool {
+func checkUserEmail(email string) bool {
 	p := cayley.StartPath(store, email).In("email")
 	it := p.BuildIterator()
 	defer it.Close()
 	return cayley.RawNext(it)
 }
 
-func CheckUserName(username string) bool {
+func checkUserName(username string) bool {
 	p := cayley.StartPath(store, username).Has("is", "User")
 	it := p.BuildIterator()
 	defer it.Close()
@@ -118,20 +170,20 @@ func CheckUserName(username string) bool {
 }
 
 func getUser(username string) (*User, error) {
-	if CheckUserName(username) == false {
+	if checkUserName(username) == false {
 		return nil, NoUserError
 	}
 
-	p := cayley.StartPath(store, username).Out("email", "password","tel")
+	p := cayley.StartPath(store, username).Out("password","email","tel")
 	it := p.BuildIterator()
 	defer it.Close()
 
-	user := &User{clients:make(map[string]*Client)}
+	user := newUser(username,"","","")
 	user.Username = username
 	if cayley.RawNext(it) {
-		user.Email = store.NameOf(it.Result())
+		user.Password = store.NameOf(it.Result())
 		if cayley.RawNext(it) {
-			user.Password = store.NameOf(it.Result())
+			user.Email = store.NameOf(it.Result())
 			if cayley.RawNext(it) {
 				user.Tel = store.NameOf(it.Result())
 			}
@@ -144,7 +196,7 @@ func getUser(username string) (*User, error) {
 }
 
 func (u *User) save() error {
-	if CheckUserName(u.Username) == false {
+	if checkUserName(u.Username) == false {
 		if err:=store.AddQuadSet(u.quads());err!=nil {
 			return err
 		}
@@ -175,8 +227,10 @@ func getUsername(email string) (string, error) {
 }
 
 func (u *User) sendOnlineMsg() {
-	for _,c:= range u.clients {
-		c.sendUserOnlineMsg()
+	for _,c:= range u.contacts {
+		for _,cl:= range c.clients{
+			cl.sendUserOnlineMsg()
+		}
 	}
 }
 
