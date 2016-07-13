@@ -15,9 +15,6 @@ var (
 	NoClientError = errors.New("client not found")
 )
 
-var clients = make(map[string]*Client)
-var clients_mu sync.RWMutex
-
 type Client struct {
 	*server
 	UUID     string
@@ -152,7 +149,7 @@ func (c *Client) remove() error {
 func (c *Client) token() (*jwt.Token, error) {
 	u := c.user
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, MyClaims{
-		uuid: "c.UUID",
+		uuid: c.UUID,
 		username: u.Username,
 		password:u.Password,
 	})

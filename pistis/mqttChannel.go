@@ -72,7 +72,7 @@ func (c *mqttChannel)Errors() <-chan error {
 }
 func (c *mqttChannel)Subscribe(topic string) error {
 	if token := c.mqttClient.Subscribe(topic, 0, func(client *MQTT.Client, msg MQTT.Message) {
-		c.messages <- fromMQTTMessage(msg)
+		c.messages <- UnMarshal(msg)
 	}); token.Wait()&&token.Error() != nil {
 		return token.Error()
 	}
