@@ -15,7 +15,7 @@ import (
 )
 
 var RSA_KEY = func() []byte {
-	key, e := ioutil.ReadFile("pistis.cn.key")
+	key, e := ioutil.ReadFile("RSA.key")
 	if e != nil {
 		panic(e.Error())
 	}
@@ -23,7 +23,7 @@ var RSA_KEY = func() []byte {
 }()
 
 var RSA_PUB = func() []byte {
-	key, e := ioutil.ReadFile("pistis.cn.public.key")
+	key, e := ioutil.ReadFile("RSA.public.key")
 	if e != nil {
 		panic(e.Error())
 	}
@@ -46,7 +46,7 @@ var (
 )
 
 func (c MyClaims) Valid() error {
-	if checkUser(c.username, c.password) && checkClient(c.uuid, c.username) {
+	if checkUser(c.username, c.password) && checkClient(c.username,c.uuid) {
 		return nil
 	}
 	return jwt.ErrInvalidKey
@@ -87,8 +87,6 @@ func checkTokenWithTokenInfo(token, uuid, username string) bool {
 	c := t.Claims.(MyClaims)
 	return c.uuid == uuid && c.username == username
 }
-
-
 
 /*rest server*/
 type Auth struct {
@@ -160,7 +158,7 @@ func auth(auth Auth, r render.Render, req *http.Request) {
 	}
 
 	if auth.Password != u.Password {
-		log.Println(auth.Password,u.Password)
+		log.Println(auth.Password, u.Password)
 		result(http.StatusConflict, false, "password not matched", nil)
 		return
 	}

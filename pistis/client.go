@@ -3,16 +3,15 @@ package pistis
 import (
 	"fmt"
 	"time"
+	g "github.com/google/cayley/graph"
 	"github.com/google/cayley/quad"
 	"github.com/google/cayley"
-	g "github.com/google/cayley/graph"
-	"errors"
 	"github.com/dgrijalva/jwt-go"
-	"sync"
+	"errors"
 )
 
 var (
-	NoClientError = errors.New("client not found")
+	ClientNotExistedError = errors.New("client not existed")
 )
 
 type Client struct {
@@ -38,7 +37,7 @@ func (c *Client) ensureRunning() error {
 		if err := s.mqttChannel.Subscribe(fmt.Sprint("pistis/", s.Name(), "/m")); err != nil {
 			return err
 		}
-		s.RegisterHandler("offline", handleOffline)
+
 		c.server = s
 	}
 
@@ -49,101 +48,6 @@ func (c *Client) ensureRunning() error {
 	}
 
 	return nil
-}
-
-func handleOffline(s *server, m *Message) {
-	clients_mu.RLock()
-	defer func() {
-		clients_mu.RUnlock()
-		s.Stop()
-	}()
-
-	clients[s.name] = nil
-
-	for n, c := range clients {
-		c.mqttChannel.Input() <- &Message{
-			TimeStamp :time.Now().Unix(),
-			Type      :"offline",
-			Src       :"pistis",
-			Dst       :n,
-			Payload   :s.name,
-		}
-	}
-}
-
-func checkClient(uuid, username string) bool {
-	p := cayley.StartPath(store, username).Out("client")
-	it := p.BuildIterator()
-	defer it.Close()
-	if cayley.RawNext(it) {
-		c := store.NameOf(it.Result())
-		if uuid == c {
-			return true
-		}
-	}
-	return false
-}
-
-func getClient(uuid string) (*Client, error) {
-	c := clients[uuid]
-	if c == nil {
-		p := cayley.StartPath(store, uuid).In("client")
-		it := p.BuildIterator()
-		defer it.Close()
-		if cayley.RawNext(it) {
-			username := store.NameOf(it.Result())
-			c = &Client{UUID:uuid, Username:username}
-			clients_mu.Lock()
-			defer clients_mu.Unlock()
-			clients[uuid] = c
-		} else {
-			return nil, NoClientError
-		}
-	}
-	err := c.ensureRunning()
-	return c, err
-}
-
-func (c *Client) save() error {
-	if !checkUserName(c.Username) {
-		return NoUserError
-	}
-
-	tx:=cayley.NewTransaction()
-	if checkClient(c.UUID,c.Username)==false{
-		p := cayley.StartPath(store, c.UUID).Out(c.Username)
-		it := p.BuildIterator()
-		defer it.Close()
-		if cayley.RawNext(it) {
-			un := store.NameOf(it.Result())
-			if un != c.Username {
-				store.RemoveQuad(cayley.Quad(un, "client", c.UUID, ""))
-				u, _ := getUser(un)
-				if u != nil {
-					u.clients[c.UUID] = nil
-				}
-			}
-		}
-		/*store.AddQuadSet(c.quads())*/
-		return store.ApplyTransaction(tx)
-	}
-
-
-
-	if clients[c.UUID] == nil {
-		clients_mu.Lock()
-		defer clients_mu.Unlock()
-		clients[c.UUID] = c
-	}
-	return nil
-}
-
-func (c *Client) remove() error {
-	tx := g.NewTransaction()
-	for _, quad := range c.quads() {
-		tx.RemoveQuad(quad)
-	}
-	return store.ApplyTransaction(tx)
 }
 
 func (c *Client) token() (*jwt.Token, error) {
@@ -164,4 +68,65 @@ func (c *Client) sendUserOnlineMsg() {
 		Dst       :c.topic(),
 		Payload   :c.user.Username,
 	}
+}
+
+func checkClient(username,uuid string) bool {
+	p := cayley.StartPath(store, username).Out("client")
+	it := p.BuildIterator()
+	defer it.Close()
+	if cayley.RawNext(it) {
+		c := store.NameOf(it.Result())
+		if uuid == c {
+			return true
+		}
+	}
+	return false
+}
+
+func getClient(uuid string) (*Client, error) {
+	var c *Client
+	p := cayley.StartPath(store, uuid).In("client")
+	it := p.BuildIterator()
+	defer it.Close()
+	if cayley.RawNext(it) {
+		username := store.NameOf(it.Result())
+		c = &Client{UUID:uuid, Username:username}
+	} else {
+		return nil, ClientNotExistedError
+	}
+	return c, nil
+}
+
+func (c *Client) save() error {
+	if !checkUserName(c.Username) {
+		return UserNotExistedError
+	}
+
+	var oldclient *Client
+	tx := cayley.NewTransaction()
+	if checkClient(c.UUID, c.Username) == false {
+		p := cayley.StartPath(store, c.UUID).Out(c.Username)
+		it := p.BuildIterator()
+		defer it.Close()
+		if cayley.RawNext(it) {
+			olduser := store.NameOf(it.Result())
+			if olduser != c.Username {
+				oldclient = &Client{Username:olduser, UUID:c.UUID}
+			}
+		}
+	}
+
+	if oldclient != nil {
+		oldclient.remove()
+	}
+	store.AddQuadSet(c.quads())
+	return store.ApplyTransaction(tx)
+}
+
+func (c *Client) remove() error {
+	tx := g.NewTransaction()
+	for _, quad := range c.quads() {
+		tx.RemoveQuad(quad)
+	}
+	return store.ApplyTransaction(tx)
 }

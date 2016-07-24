@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"time"
 )
-var(
+
+var (
 	mqtt_server string
 	root_server Server
 )
+
 type Server interface {
 	Name() string
 	Start() error
@@ -36,7 +38,7 @@ func NewServer(name, mqttServer string) (*server, error) {
 		return nil, err
 	}
 	var mu sync.Mutex
-	s:= &server{
+	s := &server{
 		mqttServer:mqttServer,
 		mqttChannel:c,
 		name:name,
@@ -46,13 +48,13 @@ func NewServer(name, mqttServer string) (*server, error) {
 		mu:mu,
 	}
 
-	if name=="pistis" {
+	if name == "pistis" {
 		err = s.mqttChannel.Subscribe(fmt.Sprint("pistis/m"))
-	}else{
-		err = s.mqttChannel.Subscribe(fmt.Sprint("pistis/",s.Name(),"/m"))
+	} else {
+		err = s.mqttChannel.Subscribe(fmt.Sprint("pistis/", s.Name(), "/m"))
 	}
 
-	return s,err
+	return s, err
 }
 
 func (s *server)Name() string {
@@ -63,7 +65,7 @@ func (s *server)Input() chan <- *Message {
 	return s.input
 }
 
-func (s *server)Start() error{
+func (s *server)Start() error {
 	started := make(chan bool)
 	go func() {
 		started <- true
@@ -86,7 +88,7 @@ func (s *server)topic() string {
 	return "pistis/m"
 }
 
-func (s *server)Stop() error{
+func (s *server)Stop() error {
 	s.done <- true
 	return nil
 }
@@ -118,11 +120,11 @@ func (s *server) IsRunning() bool {
 }
 
 func Start(mqttServer string) *server {
-	err:=initStore()
-	if err!=nil {
+	err := initStore()
+	if err != nil {
 		panic(err)
 	}
-	mqtt_server=mqttServer
+	mqtt_server = mqttServer
 
 	s, err := NewServer("pistis", mqtt_server)
 	if err != nil {
@@ -131,9 +133,9 @@ func Start(mqttServer string) *server {
 	if err := s.mqttChannel.Subscribe("pistis/m"); err != nil {
 		panic(err)
 	}
-	s.RegisterHandler("open", func(s *server, m *Message){
-		u,err:=getUser(m.Src)
-		if err!=nil {
+	s.RegisterHandler("open", func(s *server, m *Message) {
+
+		if err != nil {
 			s.send(&Message{
 				TimeStamp :time.Now().Unix(),
 				Type      :"error",
@@ -144,11 +146,23 @@ func Start(mqttServer string) *server {
 			return
 		}
 
+		u, err := getUser(m.Src)
+		if u == nil || err == nil {
+			s.send(&Message{
+				TimeStamp :time.Now().Unix(),
+				Type      :"error",
+				Src       :"pistis",
+				Dst       :m.Src,
+				Payload   :UserNotExistedError.Error(),
+			})
+			return
+		}
+
 		u.Input() <- m
 	})
 
 	s.Start()
-	root_server=s
+	root_server = s
 	fmt.Println("server stared")
 	return s
 }

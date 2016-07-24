@@ -5,10 +5,10 @@ import (
 	"github.com/google/cayley"
 	g "github.com/google/cayley/graph"
 	"errors"
-	"encoding/json"
 	"time"
 	"fmt"
 	"log"
+	"encoding/json"
 )
 
 var (
@@ -61,27 +61,12 @@ func (u *User) ensureRunning() error {
 			return msg, err
 		}
 
-		type ContactsMsg struct {
-			Username string
-			Email    string
-			Tel      string
-			Avatar   string
-		}
-
-		type UserMsg struct {
-			Username string
-			Email    string
-			Tel      string
-			Avatar   string
-			Contacts []*ContactsMsg
-		}
-
 		s.RegisterHandler("open", func(s *server, m *Message) {
 			msg, err := parseOpenAndCloseMsg(m)
 			if err != nil {
 				s.send(&Message{
 					TimeStamp :time.Now().Unix(),
-					Type      :"error",
+					Type      :"open-failed",
 					Src       :s.Name(),
 					Dst       :m.Src,
 					Payload   :"bad message",
@@ -92,7 +77,7 @@ func (u *User) ensureRunning() error {
 			if !checkTokenWithTokenInfo(msg.Token, msg.UUID, msg.Username) {
 				s.send(&Message{
 					TimeStamp :time.Now().Unix(),
-					Type      :"error",
+					Type      :"open-failed",
 					Src       :s.Name(),
 					Dst       :m.Src,
 					Payload   :"token is not valid",
@@ -100,35 +85,31 @@ func (u *User) ensureRunning() error {
 				return
 			}
 
-			c, _ := getClient(msg.UUID)
+			uuid := msg.UUID
+			c := u.clients[uuid]
 			if c == nil {
-				c = &Client{UUID:msg.UUID, Username:msg.Username}
-				c.ensureRunning()
+				c, err = getClient(uuid)
+				if err != nil {
+					s.send(&Message{
+						TimeStamp :time.Now().Unix(),
+						Type      :"open-failed",
+						Src       :s.Name(),
+						Dst       :m.Src,
+						Payload   :"bad message",
+					})
+				}
 			}
 
-			contacts := make([]*ContactsMsg, 0)
-			for _, contact := range u.contacts {
-				contacts = append(contacts, *ContactsMsg{
-					Username    :contact.Username,
-					Email        :  contact.Email,
-					Tel        :  contact.Tel,
-					Avatar      : contact.Avatar,
-				})
-			}
-			userMsg := &UserMsg{
-				Username:u.Username,
-				Email:u.Email,
-				Tel:u.Tel,
-				Avatar:u.Avatar,
-				Contacts:contacts,
-			}
+			c.ensureRunning()
+
+			userInfo := u.getUserInfo()
 
 			c.send(&Message{
 				TimeStamp :time.Now().Unix(),
 				Type      :"opened",
 				Src       :s.Name(),
 				Dst       :m.Src,
-				Payload   :userMsg,
+				Payload   :userInfo,
 			})
 
 		})
@@ -157,18 +138,20 @@ func (u *User) ensureRunning() error {
 				return
 			}
 
-			c, _ := getClient(msg.UUID)
+			uuid := msg.UUID
+			c := u.clients[uuid]
 			if c != nil {
 				c.Stop()
-				u.clients[msg.UUID] = nil
 			}
+
+			u.clients[uuid] = nil
 		})
 
 		s.RegisterHandler("add-contact", func(s *server, m *Message) {
-			contactName := m.Payload
-			ok,err:=u.addContact(contactName)
-			if !ok{
-				if err!=nil && err==UserNotExistedError {
+			contactName := m.Payload.(string)
+			ok, err := u.addContact(contactName)
+			if !ok {
+				if err != nil && err == UserNotExistedError {
 					s.send(&Message{
 						TimeStamp :time.Now().Unix(),
 						Type      :"add-contact-failed",
@@ -200,10 +183,10 @@ func (u *User) ensureRunning() error {
 		})
 
 		s.RegisterHandler("remove-contact", func(s *server, m *Message) {
-			contactName := m.Payload
-			ok,err:=u.removeContact(contactName)
+			contactName := m.Payload.(string)
+			ok, err := u.removeContact(contactName)
 			if !ok {
-				if err!=nil && err==ContactNotExistedError {
+				if err != nil && err == ContactNotExistedError {
 					s.send(&Message{
 						TimeStamp :time.Now().Unix(),
 						Type      :"remove-contact-failed",
@@ -354,9 +337,9 @@ func (u *User) addContact(contact string) (bool, error) {
 	}
 
 	contactUser, err := getUser(contact)
-	if err!=nil{
+	if err != nil {
 		log.Println(err)
-	}else{
+	} else {
 		u.contacts[contact] = contactUser
 	}
 
@@ -375,6 +358,41 @@ func (u *User) removeContact(contact string) (bool, error) {
 	u.contacts[contact] = nil
 
 	return true, nil
+}
+
+type ContactMsg struct {
+	Username string
+	Email    string
+	Tel      string
+	Avatar   string
+}
+
+type UserInfo struct {
+	Username string
+	Email    string
+	Tel      string
+	Avatar   string
+	Contacts []*ContactMsg
+}
+
+func (u *User) getUserInfo() *UserInfo {
+	contacts := make([]*ContactMsg, 0)
+	for _, contact := range u.contacts {
+		contacts = append(contacts, &ContactMsg{
+			Username    :contact.Username,
+			Email        :  contact.Email,
+			Tel        :  contact.Tel,
+			Avatar      : contact.Avatar,
+		})
+	}
+	userMsg := &UserInfo{
+		Username:u.Username,
+		Email:u.Email,
+		Tel:u.Tel,
+		Avatar:u.Avatar,
+		Contacts:contacts,
+	}
+	return userMsg
 }
 
 
