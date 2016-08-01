@@ -7,8 +7,8 @@ import (
 	"errors"
 	"time"
 	"fmt"
+	"strings"
 	"log"
-	"encoding/json"
 )
 
 var (
@@ -49,35 +49,39 @@ func (u *User) ensureRunning() error {
 		}
 		u.server = s
 
-		type OpenAndCloseMsg struct {
-			UUID     string
-			Username string
-			Token    string
-		}
-		parseOpenAndCloseMsg := func(m *Message) (*OpenAndCloseMsg, error) {
-			jsonbyte := ([]byte)(m.Payload.(string))
-			msg := &OpenAndCloseMsg{"", "", ""}
-			err := json.Unmarshal(jsonbyte, m)
-			return msg, err
-		}
-
 		s.RegisterHandler("open", func(s *server, m *Message) {
-			msg, err := parseOpenAndCloseMsg(m)
-			if err != nil {
+			strs:=strings.Split(m.Src,"/")
+			if len(strs)!=3 {
 				s.send(&Message{
 					TimeStamp :time.Now().Unix(),
-					Type      :"open-failed",
-					Src       :s.Name(),
+					Type      :"open-error",
+					Src       :"pistis",
 					Dst       :m.Src,
 					Payload   :"bad message",
 				})
 				return
 			}
 
-			if !checkTokenWithTokenInfo(msg.Token, msg.UUID, msg.Username) {
+			username:=strs[1]
+			uuid:=strs[2]
+
+			msg := m.Payload.(map[string]interface {})
+			if msg["Token"]==nil{
 				s.send(&Message{
 					TimeStamp :time.Now().Unix(),
-					Type      :"open-failed",
+					Type      :"open-error",
+					Src       :s.Name(),
+					Dst       :m.Src,
+					Payload   :"bad message",
+				})
+			}
+
+			token:=msg["Token"].(string)
+
+			if !checkTokenWithTokenInfo(token,username,uuid) {
+				s.send(&Message{
+					TimeStamp :time.Now().Unix(),
+					Type      :"open-error",
 					Src       :s.Name(),
 					Dst       :m.Src,
 					Payload   :"token is not valid",
@@ -85,14 +89,13 @@ func (u *User) ensureRunning() error {
 				return
 			}
 
-			uuid := msg.UUID
 			c := u.clients[uuid]
 			if c == nil {
 				c, err = getClient(uuid)
 				if err != nil {
 					s.send(&Message{
 						TimeStamp :time.Now().Unix(),
-						Type      :"open-failed",
+						Type      :"open-error",
 						Src       :s.Name(),
 						Dst       :m.Src,
 						Payload   :"bad message",
@@ -104,7 +107,7 @@ func (u *User) ensureRunning() error {
 
 			userInfo := u.getUserInfo()
 
-			c.send(&Message{
+			s.send(&Message{
 				TimeStamp :time.Now().Unix(),
 				Type      :"opened",
 				Src       :s.Name(),
@@ -112,22 +115,16 @@ func (u *User) ensureRunning() error {
 				Payload   :userInfo,
 			})
 
+			log.Println("opened")
+
 		})
 
 		s.RegisterHandler("close", func(s *server, m *Message) {
-			msg, err := parseOpenAndCloseMsg(m)
-			if err != nil {
-				s.send(&Message{
-					TimeStamp :time.Now().Unix(),
-					Type      :"error",
-					Src       :s.Name(),
-					Dst       :m.Src,
-					Payload   :"bad message",
-				})
-				return
-			}
+			msg := m.Payload.(map[string]interface {})
+			mToken:=msg["Token"].(string)
+			mUUID:=msg["UUID"].(string)
 
-			if !checkTokenWithTokenInfo(msg.Token, msg.UUID, msg.Username) {
+			if !checkTokenWithUUID(mToken, mUUID) {
 				s.send(&Message{
 					TimeStamp :time.Now().Unix(),
 					Type      :"error",
@@ -138,13 +135,12 @@ func (u *User) ensureRunning() error {
 				return
 			}
 
-			uuid := msg.UUID
-			c := u.clients[uuid]
+			c := u.clients[mUUID]
 			if c != nil {
 				c.Stop()
 			}
 
-			u.clients[uuid] = nil
+			u.clients[mUUID] = nil
 		})
 
 		s.RegisterHandler("add-contact", func(s *server, m *Message) {
@@ -281,6 +277,8 @@ func getUser(username string) (*User, error) {
 				}
 			}
 		}
+	}else{
+		return nil,UserNotExistedError
 	}
 
 	err := user.ensureRunning()

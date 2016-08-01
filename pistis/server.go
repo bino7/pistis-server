@@ -3,7 +3,9 @@ package pistis
 import (
 	"sync"
 	"fmt"
+	"strings"
 	"time"
+	"log"
 )
 
 var (
@@ -133,28 +135,25 @@ func Start(mqttServer string) *server {
 	if err := s.mqttChannel.Subscribe("pistis/m"); err != nil {
 		panic(err)
 	}
-	s.RegisterHandler("open", func(s *server, m *Message) {
 
-		if err != nil {
+	s.RegisterHandler("open", func(s *server, m *Message) {
+		strs:=strings.Split(m.Src,"/")
+		if len(strs)!=3 {
 			s.send(&Message{
 				TimeStamp :time.Now().Unix(),
-				Type      :"error",
+				Type      :"open-error",
 				Src       :"pistis",
 				Dst       :m.Src,
-				Payload   :err.Error(),
+				Payload   :"bad message",
 			})
 			return
 		}
 
-		u, err := getUser(m.Src)
-		if u == nil || err == nil {
-			s.send(&Message{
-				TimeStamp :time.Now().Unix(),
-				Type      :"error",
-				Src       :"pistis",
-				Dst       :m.Src,
-				Payload   :UserNotExistedError.Error(),
-			})
+		username:=strs[1]
+		log.Println(username)
+
+		u,err:=getUser(username)
+		if err!=nil {
 			return
 		}
 

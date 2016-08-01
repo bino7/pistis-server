@@ -8,6 +8,7 @@ import (
 	"github.com/google/cayley"
 	"github.com/dgrijalva/jwt-go"
 	"errors"
+	"log"
 )
 
 var (
@@ -52,10 +53,10 @@ func (c *Client) ensureRunning() error {
 
 func (c *Client) token() (*jwt.Token, error) {
 	u := c.user
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, MyClaims{
-		uuid: c.UUID,
-		username: u.Username,
-		password:u.Password,
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"uuid": c.UUID,
+		"username": u.Username,
+		"password":u.Password,
 	})
 	return token, nil
 }
@@ -74,7 +75,7 @@ func checkClient(username,uuid string) bool {
 	p := cayley.StartPath(store, username).Out("client")
 	it := p.BuildIterator()
 	defer it.Close()
-	if cayley.RawNext(it) {
+	for cayley.RawNext(it) {
 		c := store.NameOf(it.Result())
 		if uuid == c {
 			return true
@@ -104,7 +105,7 @@ func (c *Client) save() error {
 
 	var oldclient *Client
 	tx := cayley.NewTransaction()
-	if checkClient(c.UUID, c.Username) == false {
+	if !checkClient(c.UUID, c.Username) {
 		p := cayley.StartPath(store, c.UUID).Out(c.Username)
 		it := p.BuildIterator()
 		defer it.Close()
@@ -119,7 +120,15 @@ func (c *Client) save() error {
 	if oldclient != nil {
 		oldclient.remove()
 	}
-	store.AddQuadSet(c.quads())
+
+	log.Println("check client:",checkClient(c.Username,c.UUID))
+
+	if !checkClient(c.Username,c.UUID) {
+		store.AddQuadSet(c.quads())
+	}
+
+	c.user.clients[c.UUID]=c;
+
 	return store.ApplyTransaction(tx)
 }
 

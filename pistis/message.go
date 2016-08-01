@@ -44,7 +44,6 @@ func (m *Message)Marshal() []byte {
 
 func UnMarshal(m MQTT.Message) *Message {
 	msg := &Message{}
-	fmt.Println(m.Payload())
 	if e := json.Unmarshal(m.Payload(), msg); e != nil {
 		panic(e)
 	}

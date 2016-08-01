@@ -35,9 +35,9 @@ func float64Time(t time.Time) float64 {
 }
 
 type MyClaims struct {
-	uuid     string
-	username string
-	password string
+	UUID     string
+	Username string
+	Password string
 }
 
 var (
@@ -46,17 +46,22 @@ var (
 )
 
 func (c MyClaims) Valid() error {
-	if checkUser(c.username, c.password) && checkClient(c.username,c.uuid) {
+	if checkUser(c.Username, c.Password) && checkClient(c.Username, c.UUID) {
 		return nil
 	}
 	return jwt.ErrInvalidKey
 }
 
 func KeyFunc(token *jwt.Token) (interface{}, error) {
-	if token.Valid {
-		return nil, jwt.ValidationError{}
+	if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+		return nil, fmt.Errorf("Unexpected signing method: %v", token.Header["alg"])
 	}
-	return nil, nil
+	if _, ok := token.Claims.(jwt.MapClaims); !ok {
+		return nil, nil
+	} /*else if !checkUser(claims["username"].(string), claims["password"].(string)) || !checkClient(claims["username"].(string), claims["uuid"].(string)) {
+		return nil, nil
+	}*/
+		return RSA_KEY, nil
 }
 
 var Authenticator = func(c martini.Context, req *http.Request, res http.ResponseWriter) {
@@ -67,25 +72,40 @@ var Authenticator = func(c martini.Context, req *http.Request, res http.Response
 		token := req.Header.Get("token")
 
 		if !checkToken(token) {
-			fmt.Println("check token failed")
 			res.WriteHeader(http.StatusForbidden)
 			return
 		}
 	}
 }
 
-func checkToken(token string) bool {
-	t, err := jwt.Parse(token, KeyFunc)
-	return err == nil && t.Valid
+func checkToken(tokenstr string) bool {
+	token, err := jwt.Parse(tokenstr, KeyFunc)
+	return err == nil && token.Valid
 }
-
-func checkTokenWithTokenInfo(token, uuid, username string) bool {
-	t, err := jwt.Parse(token, KeyFunc)
-	if err != nil || !t.Valid {
+func checkTokenWithUUID(tokenstr, uuid string) bool {
+	token, err := jwt.Parse(tokenstr, KeyFunc)
+	if err != nil || !token.Valid {
 		return false
 	}
-	c := t.Claims.(MyClaims)
-	return c.uuid == uuid && c.username == username
+
+	if claims, ok := token.Claims.(jwt.MapClaims); ok {
+		return claims["uuid"] == uuid
+	} else {
+		return false
+	}
+}
+
+func checkTokenWithTokenInfo(tokenstr,username, uuid string) bool {
+	token, err := jwt.Parse(tokenstr, KeyFunc)
+	if err != nil || !token.Valid {
+		return false
+	}
+
+	if claims, ok := token.Claims.(jwt.MapClaims); ok {
+		return claims["uuid"] == uuid && claims["username"] == username
+	} else {
+		return false
+	}
 }
 
 /*rest server*/
@@ -105,8 +125,6 @@ func AuthServer(r martini.Router) {
 }
 
 func auth(auth Auth, r render.Render, req *http.Request) {
-
-	log.Println("auth", auth)
 
 	type AuthResult struct {
 		Result  bool
