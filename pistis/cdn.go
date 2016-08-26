@@ -4,13 +4,13 @@ import (
 	"github.com/go-martini/martini"
 	"net/http"
 	"github.com/martini-contrib/render"
-	"github.com/google/cayley"
+	"github.com/cayleygraph/cayley"
 	"io/ioutil"
 	"github.com/boltdb/bolt"
 	"fmt"
 	"strings"
 	"encoding/json"
-	"log"
+	"github.com/cayleygraph/cayley/quad"
 )
 
 var (
@@ -78,10 +78,10 @@ func upload(r render.Render, req *http.Request) {
 	fmt.Println(filename, fname, contentType, fh, user)
 
 	check := func(id string) bool {
-		p := cayley.StartPath(store, "image").Out(id)
+		p := cayley.StartPath(store, quad.StringToValue("image")).Out(id)
 		it := p.BuildIterator()
 		defer it.Close()
-		return cayley.RawNext(it)
+		return it.Next()
 	}
 	id := numberedFilename(0)
 	for n := 0; check(id); n = n + 1 {

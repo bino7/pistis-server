@@ -1,14 +1,14 @@
+
 package pistis
 
-import (
+/*import (
 	"fmt"
 	"time"
-	g "github.com/google/cayley/graph"
-	"github.com/google/cayley/quad"
-	"github.com/google/cayley"
+	"github.com/cayleygraph/cayley"
+	"github.com/cayleygraph/cayley/quad"
+	"github.com/cayleygraph/cayley/graph"
 	"github.com/dgrijalva/jwt-go"
 	"errors"
-	"log"
 )
 
 var (
@@ -24,7 +24,7 @@ type Client struct {
 
 func (c *Client) quads() []quad.Quad {
 	return []quad.Quad{
-		cayley.Quad(c.Username, "client", c.UUID, ""),
+		quad.Make(c.Username, "client", c.UUID, ""),
 	}
 }
 
@@ -71,27 +71,33 @@ func (c *Client) sendUserOnlineMsg() {
 	}
 }
 
-func checkClient(username,uuid string) bool {
-	p := cayley.StartPath(store, username).Out("client")
+func checkClient(username, uuid string) bool {
+	p := cayley.StartPath(store, quad.StringToValue(username)).Out("client")
 	it := p.BuildIterator()
 	defer it.Close()
-	for cayley.RawNext(it) {
-		c := store.NameOf(it.Result())
+	for it.Next() {
+		c := quad.StringOf(store.NameOf(it.Result()))
 		if uuid == c {
 			return true
 		}
+	}
+	err := p.Iterate(nil).EachValue(nil, func(value quad.Value) {
+
+	})
+	if err != nil {
+		log.Fatalln(err)
 	}
 	return false
 }
 
 func getClient(uuid string) (*Client, error) {
 	var c *Client
-	p := cayley.StartPath(store, uuid).In("client")
+	p := cayley.StartPath(store, quad.StringToValue(uuid)).In("client")
 	it := p.BuildIterator()
 	defer it.Close()
-	if cayley.RawNext(it) {
+	if it.Next() {
 		username := store.NameOf(it.Result())
-		c = &Client{UUID:uuid, Username:username}
+		c = &Client{UUID:uuid, Username:username.Native().(string)}
 	} else {
 		return nil, ClientNotExistedError
 	}
@@ -106,13 +112,13 @@ func (c *Client) save() error {
 	var oldclient *Client
 	tx := cayley.NewTransaction()
 	if !checkClient(c.UUID, c.Username) {
-		p := cayley.StartPath(store, c.UUID).Out(c.Username)
+		p := cayley.StartPath(store, quad.StringToValue(c.UUID)).Out(c.Username)
 		it := p.BuildIterator()
 		defer it.Close()
-		if cayley.RawNext(it) {
+		if it.Next() {
 			olduser := store.NameOf(it.Result())
-			if olduser != c.Username {
-				oldclient = &Client{Username:olduser, UUID:c.UUID}
+			if olduser.String() != c.Username {
+				oldclient = &Client{Username:olduser.String(), UUID:c.UUID}
 			}
 		}
 	}
@@ -121,21 +127,22 @@ func (c *Client) save() error {
 		oldclient.remove()
 	}
 
-	log.Println("check client:",checkClient(c.Username,c.UUID))
+	log.Println("check client:", checkClient(c.Username, c.UUID))
 
-	if !checkClient(c.Username,c.UUID) {
+	if !checkClient(c.Username, c.UUID) {
 		store.AddQuadSet(c.quads())
 	}
 
-	c.user.clients[c.UUID]=c;
+	c.user.clients[c.UUID] = c;
 
 	return store.ApplyTransaction(tx)
 }
 
 func (c *Client) remove() error {
-	tx := g.NewTransaction()
+	tx := graph.NewTransaction()
 	for _, quad := range c.quads() {
 		tx.RemoveQuad(quad)
 	}
 	return store.ApplyTransaction(tx)
 }
+*/

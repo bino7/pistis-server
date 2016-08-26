@@ -39,10 +39,9 @@ func StartHttpServer(frontendServer string){
 
 	r := martini.NewRouter()
 
-
 	AuthServer(r)
 
-	CDNServer(r)
+	//CDNServer(r)
 
 	m.MapTo(r, (*martini.Routes)(nil))
 

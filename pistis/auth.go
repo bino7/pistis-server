@@ -11,11 +11,10 @@ import (
 	"fmt"
 	"encoding/json"
 	"errors"
-	"log"
 )
 
 var RSA_KEY = func() []byte {
-	key, e := ioutil.ReadFile("RSA.key")
+	key, e := ioutil.ReadFile("rsa_private_key.pem")
 	if e != nil {
 		panic(e.Error())
 	}
@@ -23,7 +22,7 @@ var RSA_KEY = func() []byte {
 }()
 
 var RSA_PUB = func() []byte {
-	key, e := ioutil.ReadFile("RSA.public.key")
+	key, e := ioutil.ReadFile("rsa_public_key.pem")
 	if e != nil {
 		panic(e.Error())
 	}
@@ -34,23 +33,10 @@ func float64Time(t time.Time) float64 {
 	return float64(t.Unix())
 }
 
-type MyClaims struct {
-	UUID     string
-	Username string
-	Password string
-}
-
 var (
 	TokenNotForTheUserError = errors.New("token not for the user")
 	TokenPasswordNotRightError = errors.New("token password not right")
 )
-
-func (c MyClaims) Valid() error {
-	if checkUser(c.Username, c.Password) && checkClient(c.Username, c.UUID) {
-		return nil
-	}
-	return jwt.ErrInvalidKey
-}
 
 func KeyFunc(token *jwt.Token) (interface{}, error) {
 	if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -66,7 +52,7 @@ func KeyFunc(token *jwt.Token) (interface{}, error) {
 
 var Authenticator = func(c martini.Context, req *http.Request, res http.ResponseWriter) {
 	token, _ := req.Cookie("Authorization")
-	fmt.Println(token)
+	log.Debugln("token",token)
 	if req.RequestURI != "/auth" && req.RequestURI != "/register" {
 
 		token := req.Header.Get("token")
@@ -95,17 +81,19 @@ func checkTokenWithUUID(tokenstr, uuid string) bool {
 	}
 }
 
-func checkTokenWithTokenInfo(tokenstr,username, uuid string) bool {
+func checkTokenWithTokenInfo(tokenstr,username, uuid string,onFailed func()) bool {
+	res:=false
 	token, err := jwt.Parse(tokenstr, KeyFunc)
-	if err != nil || !token.Valid {
-		return false
+	if err == nil && token.Valid {
+		claims, ok := token.Claims.(jwt.MapClaims)
+		res=ok && claims["uuid"] == uuid && claims["username"] == username
 	}
 
-	if claims, ok := token.Claims.(jwt.MapClaims); ok {
-		return claims["uuid"] == uuid && claims["username"] == username
-	} else {
-		return false
+	if !res && onFailed!=nil {
+		onFailed()
 	}
+
+	return res
 }
 
 /*rest server*/
@@ -125,7 +113,6 @@ func AuthServer(r martini.Router) {
 }
 
 func auth(auth Auth, r render.Render, req *http.Request) {
-
 	type AuthResult struct {
 		Result  bool
 		Message string
@@ -171,24 +158,18 @@ func auth(auth Auth, r render.Render, req *http.Request) {
 
 	u, err := getUser(username)
 	if err != nil {
+		log.Println(err)
 		result(http.StatusConflict, false, "can not find user", nil)
 		return
 	}
 
 	if auth.Password != u.Password {
-		log.Println(auth.Password, u.Password)
+		log.Println(auth.Password, u.Password,len(auth.Password),len(u.Password))
 		result(http.StatusConflict, false, "password not matched", nil)
 		return
 	}
 
-	c := &Client{UUID:auth.UUID, Username:auth.Username, user:u}
-	err = c.save()
-	if err != nil {
-		result(http.StatusInternalServerError, false, "failed to start client", nil)
-		return
-	}
-
-	token, err := c.token()
+	token, err := u.token(auth.UUID)
 	if err != nil {
 		result(http.StatusInternalServerError, false, "failed to create token", nil)
 		return
@@ -236,17 +217,12 @@ func register(reg Registration, r render.Render) {
 		}
 	}
 
-	u := &User{Email:reg.Email,
-		Password:reg.Password,
-		Username:reg.Username,
-		clients:make(map[string]*Client),
-		contacts:make(map[string]*User)}
-
-	if checkUserName(u.Username) || checkUserEmail(u.Email) {
+	if checkUserName(reg.Username) || checkUserEmail(reg.Email) {
 		result(http.StatusNotAcceptable, false, "username or email exited", nil)
 		return
 	}
 
+	u := newUser(reg.Username,reg.Password,reg.Email,"")
 	err := u.save()
 	if err != nil {
 		result(http.StatusInternalServerError, false, "", nil)
@@ -259,16 +235,7 @@ func register(reg Registration, r render.Render) {
 		return
 	}
 
-	c := &Client{UUID:reg.UUID, Username:reg.Username, user:u}
-	err = c.save()
-	if err != nil {
-		result(http.StatusInternalServerError, false, "", nil)
-		return
-	}
-
-	c.ensureRunning()
-
-	token, err := c.token()
+	token, err := u.token(reg.UUID)
 	if err != nil {
 		result(http.StatusInternalServerError, false, "create token error", nil)
 		return

@@ -2,16 +2,25 @@ package pistis
 
 import (
 	"sync"
-	"fmt"
-	"strings"
 	"time"
-	"log"
+	"github.com/Sirupsen/logrus"
+	"fmt"
 )
 
 var (
 	mqtt_server string
 	root_server Server
+	log = logrus.New()
 )
+
+func init() {
+	log.Level=logrus.DebugLevel
+	log.Formatter = &logrus.TextFormatter{
+		ForceColors:true,
+		FullTimestamp:true,
+		TimestampFormat:time.ANSIC,
+	}
+}
 
 type Server interface {
 	Name() string
@@ -35,6 +44,11 @@ type server struct {
 }
 
 func NewServer(name, mqttServer string) (*server, error) {
+	log.WithFields(logrus.Fields{
+		"name":name,
+		"mqttServer":mqttServer,
+	}).Debugln("new server")
+
 	c, err := NewMqttChannel(mqttServer)
 	if err != nil {
 		return nil, err
@@ -107,7 +121,7 @@ func (s *server)handle(m *Message) {
 	}
 	h := s.handlers[m.Type]
 	if h == nil {
-		fmt.Println("unhandle message", m)
+		log.Warningln("unhandle message", m)
 	}
 	h(s, m)
 }
@@ -137,33 +151,60 @@ func Start(mqttServer string) *server {
 	}
 
 	s.RegisterHandler("open", func(s *server, m *Message) {
-		strs:=strings.Split(m.Src,"/")
-		if len(strs)!=3 {
-			s.send(&Message{
-				TimeStamp :time.Now().Unix(),
-				Type      :"open-error",
-				Src       :"pistis",
-				Dst       :m.Src,
-				Payload   :"bad message",
-			})
-			return
+		ok,_,username,uuid:=parseOpenCloseMsg(s,m)
+
+		if ok {
+			u,err:=getUser(username)
+			if err!=nil {
+				return
+			}
+			u.ensureRunning()
+			u.clientOpen(uuid)
 		}
+	})
 
-		username:=strs[1]
-		log.Println(username)
+	s.RegisterHandler("close",func(s *server,m *Message){
+		ok,_,username,uuid:=parseOpenCloseMsg(s,m)
 
-		u,err:=getUser(username)
-		if err!=nil {
-			return
+		if ok {
+			u,err:=getUser(username)
+			if err!=nil {
+				return
+			}
+			u.ensureRunning()
+			u.clientOpen(uuid)
 		}
-
-		u.Input() <- m
 	})
 
 	s.Start()
 	root_server = s
-	fmt.Println("server stared")
+	log.Infoln("server started")
 	return s
+}
+
+func parseOpenCloseMsg(s *server, m *Message)(bool,string,string,string){
+	errorType:=fmt.Sprint(m.Type,"-error")
+
+	ok,token,username,uuid:=m.asOpenCloseMsg(func(){
+		s.send(&Message{
+			TimeStamp :time.Now().Unix(),
+			Type      :errorType,
+			Src       :s.Name(),
+			Dst       :m.Src,
+			Payload   :"bad message",
+		})
+	})
+
+	checkTokenWithTokenInfo(token,username,uuid,func(){
+		s.send(&Message{
+			TimeStamp :time.Now().Unix(),
+			Type      :errorType,
+			Src       :s.Name(),
+			Dst       :m.Src,
+			Payload   :"token is not valid",
+		})
+	})
+	return ok,token,username,uuid
 }
 
 func (s *server)send(m *Message) {

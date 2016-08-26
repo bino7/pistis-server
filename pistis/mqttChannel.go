@@ -2,11 +2,12 @@ package pistis
 
 import (
 	MQTT "git.eclipse.org/gitroot/paho/org.eclipse.paho.mqtt.golang.git"
+	"github.com/Sirupsen/logrus"
 )
 
 type MqttChannel interface {
 	Topics() []string
-	Input() chan <- *Message
+	Input() chan<- *Message
 	Messages() <-chan *Message
 	Errors() <-chan error
 	Subscribe(topic string) error
@@ -44,9 +45,17 @@ func NewMqttChannel(server string) (*mqttChannel, error) {
 		for {
 			select {
 			case msg := <-c.input:
-				if token := c.mqttClient.Publish(msg.Topic(), msg.Qos(), msg.Retained(), msg.Marshal()); token.Wait() && token.Error() != nil {
+				if token := c.mqttClient.Publish(msg.Topic(), msg.Qos(), msg.Retained(), msg.Marshal());
+					token.Wait() && token.Error() != nil {
 					c.errors <- token.Error()
+					log.WithFields(logrus.Fields{
+						"msg":msg.asString(),
+						"topic":msg.Topic(),
+					}).Debugln("public message failed")
 				}
+				log.WithFields(logrus.Fields{
+					"msg":msg.asString(),
+				}).Debugln("public message success")
 			case <-c.done:
 				return
 			}
@@ -72,7 +81,9 @@ func (c *mqttChannel)Errors() <-chan error {
 }
 func (c *mqttChannel)Subscribe(topic string) error {
 	if token := c.mqttClient.Subscribe(topic, 0, func(client *MQTT.Client, msg MQTT.Message) {
-		c.messages <- UnMarshal(msg)
+		m:=UnMarshal(msg)
+		c.messages <- m
+		logrus.WithField("msg",m.asString()).Debugln("receive message")
 	}); token.Wait()&&token.Error() != nil {
 		return token.Error()
 	}

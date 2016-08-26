@@ -1,14 +1,15 @@
 package pistis
 
 import (
-	"github.com/google/cayley/quad"
-	"github.com/google/cayley"
-	g "github.com/google/cayley/graph"
+	"github.com/cayleygraph/cayley"
+	"github.com/cayleygraph/cayley/graph"
 	"errors"
 	"time"
 	"fmt"
-	"strings"
-	"log"
+	"github.com/Sirupsen/logrus"
+	"sync"
+	"github.com/cayleygraph/cayley/quad"
+	"github.com/dgrijalva/jwt-go"
 )
 
 var (
@@ -27,17 +28,20 @@ type User struct {
 	Tel      string
 	Avatar   string
 	contacts map[string]*User
-	clients  map[string]*Client
+	clients  []string
+	mu          sync.Mutex
 }
 
 func newUser(username, password, email, tel string) *User {
+	var mu sync.Mutex
 	return &User{
 		Username :username,
 		Password :password,
 		Email    :email,
 		Tel      :tel,
-		clients  :make(map[string]*Client),
+		clients  :make([]string,0),
 		contacts :make(map[string]*User),
+		mu:mu,
 	}
 }
 
@@ -47,101 +51,8 @@ func (u *User) ensureRunning() error {
 		if err != nil {
 			return err
 		}
+		s.mqttChannel.Subscribe(fmt.Sprint("pistis/", s.Name(), "/*/m"))
 		u.server = s
-
-		s.RegisterHandler("open", func(s *server, m *Message) {
-			strs:=strings.Split(m.Src,"/")
-			if len(strs)!=3 {
-				s.send(&Message{
-					TimeStamp :time.Now().Unix(),
-					Type      :"open-error",
-					Src       :"pistis",
-					Dst       :m.Src,
-					Payload   :"bad message",
-				})
-				return
-			}
-
-			username:=strs[1]
-			uuid:=strs[2]
-
-			msg := m.Payload.(map[string]interface {})
-			if msg["Token"]==nil{
-				s.send(&Message{
-					TimeStamp :time.Now().Unix(),
-					Type      :"open-error",
-					Src       :s.Name(),
-					Dst       :m.Src,
-					Payload   :"bad message",
-				})
-			}
-
-			token:=msg["Token"].(string)
-
-			if !checkTokenWithTokenInfo(token,username,uuid) {
-				s.send(&Message{
-					TimeStamp :time.Now().Unix(),
-					Type      :"open-error",
-					Src       :s.Name(),
-					Dst       :m.Src,
-					Payload   :"token is not valid",
-				})
-				return
-			}
-
-			c := u.clients[uuid]
-			if c == nil {
-				c, err = getClient(uuid)
-				if err != nil {
-					s.send(&Message{
-						TimeStamp :time.Now().Unix(),
-						Type      :"open-error",
-						Src       :s.Name(),
-						Dst       :m.Src,
-						Payload   :"bad message",
-					})
-				}
-			}
-
-			c.ensureRunning()
-
-			userInfo := u.getUserInfo()
-
-			s.send(&Message{
-				TimeStamp :time.Now().Unix(),
-				Type      :"opened",
-				Src       :s.Name(),
-				Dst       :m.Src,
-				Payload   :userInfo,
-			})
-
-			log.Println("opened")
-
-		})
-
-		s.RegisterHandler("close", func(s *server, m *Message) {
-			msg := m.Payload.(map[string]interface {})
-			mToken:=msg["Token"].(string)
-			mUUID:=msg["UUID"].(string)
-
-			if !checkTokenWithUUID(mToken, mUUID) {
-				s.send(&Message{
-					TimeStamp :time.Now().Unix(),
-					Type      :"error",
-					Src       :s.Name(),
-					Dst       :m.Src,
-					Payload   :"token is not valid",
-				})
-				return
-			}
-
-			c := u.clients[mUUID]
-			if c != nil {
-				c.Stop()
-			}
-
-			u.clients[mUUID] = nil
-		})
 
 		s.RegisterHandler("add-contact", func(s *server, m *Message) {
 			contactName := m.Payload.(string)
@@ -220,39 +131,81 @@ func (u *User) ensureRunning() error {
 	return nil
 }
 
+func (u *User) clientOpen(uuid string){
+	u.addClient(uuid)
+
+	userInfo := u.getUserInfo()
+	u.send(&Message{
+		TimeStamp :time.Now().Unix(),
+		Type      :"opened",
+		Src       :u.Name(),
+		Dst       :u.clientTopic(uuid),
+		Payload   :userInfo,
+	})
+
+	log.WithFields(logrus.Fields{
+		"user name":u.Username,
+		"name":u.Name(),
+		"src":u.clientTopic(uuid),
+	}).Debugln("opened")
+}
+
+func (u *User) clientClose(uuid string){
+	u.removeClient(uuid)
+}
+
+func (u *User) clientTopic(uuid string) string{
+	return fmt.Sprint("pistis/", u.Username, "/",uuid)
+}
 func (u *User)quads() []quad.Quad {
 	return []quad.Quad{
-		cayley.Quad(u.Username, "is", "User", ""),
-		cayley.Quad(u.Username, "email", u.Email, ""),
-		cayley.Quad(u.Username, "password", u.Password, ""),
-		cayley.Quad(u.Username, "tel", u.Tel, ""),
-		cayley.Quad(u.Username, "avatar", u.Avatar, ""),
+		quad.Make(u.Username, "is", "User", ""),
+		quad.Make(u.Username, "email", u.Email, ""),
+		quad.Make(u.Username, "password", u.Password, ""),
+		quad.Make(u.Username, "tel", u.Tel, ""),
+		quad.Make(u.Username, "avatar", u.Avatar, ""),
 	}
 }
 
 func checkUser(username, password string) bool {
-	p := cayley.StartPath(store, username).Out("password")
+	p := cayley.StartPath(store, quad.StringToValue(username)).Out("password")
 	it := p.BuildIterator()
 	defer it.Close()
-	if cayley.RawNext(it) {
+	if it.Next() {
 		pw := store.NameOf(it.Result())
-		return password == pw
+		return password == pw.String()
 	}
 	return false
 }
 
 func checkUserEmail(email string) bool {
-	p := cayley.StartPath(store, email).In("email")
+	p := cayley.StartPath(store, quad.StringToValue(email)).In("email")
 	it := p.BuildIterator()
 	defer it.Close()
-	return cayley.RawNext(it)
+	res:=false
+	for it.Next() {
+		res=true
+		v:=store.NameOf(it.Result())
+		log.WithFields(logrus.Fields{
+			"res":v,
+		}).Debugln("checkUserEmail")
+	}
+	return res
 }
 
 func checkUserName(username string) bool {
-	p := cayley.StartPath(store, username).Has("is", "User")
+	p := cayley.StartPath(store, quad.StringToValue(username)).Has("is", quad.StringToValue("User"))
 	it := p.BuildIterator()
 	defer it.Close()
-	return cayley.RawNext(it)
+	res:=false
+	for it.Next() {
+		res=true
+		v:=store.NameOf(it.Result())
+		log.WithFields(logrus.Fields{
+			"res":v,
+		}).Debugln("checkUserName")
+	}
+	return res
 }
 
 func getUser(username string) (*User, error) {
@@ -260,26 +213,28 @@ func getUser(username string) (*User, error) {
 		return nil, UserNotExistedError
 	}
 
-	p := cayley.StartPath(store, username).Out("password", "email", "tel", "avatar")
-	it := p.BuildIterator()
-	defer it.Close()
-
 	user := newUser(username, "", "", "")
-	user.Username = username
-	if cayley.RawNext(it) {
-		user.Password = store.NameOf(it.Result())
-		if cayley.RawNext(it) {
-			user.Avatar = store.NameOf(it.Result())
-			if cayley.RawNext(it) {
-				user.Email = store.NameOf(it.Result())
-				if cayley.RawNext(it) {
-					user.Tel = store.NameOf(it.Result())
-				}
+
+	getProperty:=func(name string)string{
+		p := cayley.StartPath(store, quad.StringToValue(username)).Out(name)
+		it:=p.BuildIterator()
+		if it.Next() {
+			v:=store.NameOf(it.Result()).Native()
+			s,ok:=v.(string)
+			if ok{
+				return s
+			}else{
+				return ""
 			}
+		}else{
+			return ""
 		}
-	}else{
-		return nil,UserNotExistedError
 	}
+
+	user.Email=getProperty("email")
+	user.Password=getProperty("password")
+	user.Tel=getProperty("tel")
+	user.Avatar=getProperty("avatar")
 
 	err := user.ensureRunning()
 
@@ -288,17 +243,27 @@ func getUser(username string) (*User, error) {
 
 func (u *User) save() error {
 	if checkUserName(u.Username) == false {
+		for _,q:=range u.quads(){
+			log.WithFields(logrus.Fields{
+				"quad":q,
+			}).Debugln("user save")
+		}
 		if err := store.AddQuadSet(u.quads()); err != nil {
 			return err
 		}
 	} else {
 		//update
 	}
+
+	u1,_:=getUser(u.Username)
+	log.Debugln(u.Username,u1.Username)
+	log.Debugln(u.Password,u1.Password)
+	log.Debugln(u.Email,u1.Email)
 	return nil
 }
 
 func (u *User) remove() error {
-	tx := g.NewTransaction()
+	tx := graph.NewTransaction()
 	for _, quad := range u.quads() {
 		tx.RemoveQuad(quad)
 	}
@@ -306,11 +271,11 @@ func (u *User) remove() error {
 }
 
 func getUsername(email string) (string, error) {
-	p := cayley.StartPath(store, email).In("email")
+	p := cayley.StartPath(store, quad.StringToValue(email)).In("email")
 	it := p.BuildIterator()
 	defer it.Close()
-	if cayley.RawNext(it) {
-		username := store.NameOf(it.Result())
+	if it.Next() {
+		username := store.NameOf(it.Result()).String()
 		return username, nil
 	} else {
 		return "", NoEmailError
@@ -320,7 +285,8 @@ func getUsername(email string) (string, error) {
 func (u *User) sendOnlineMsg() {
 	for _, c := range u.contacts {
 		for _, cl := range c.clients {
-			cl.sendUserOnlineMsg()
+			log.Debugln(cl)
+			//cl.sendUserOnlineMsg()
 		}
 	}
 }
@@ -391,6 +357,48 @@ func (u *User) getUserInfo() *UserInfo {
 		Contacts:contacts,
 	}
 	return userMsg
+}
+
+func (u *User) hasClient(uuid string) bool{
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for _,c:=range u.clients {
+		if c==uuid {
+			return true
+		}
+	}
+	return false
+}
+
+func (u *User) addClient(uuid string) {
+	if u.hasClient(uuid) {
+		return
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.clients=append(u.clients,uuid)
+}
+
+func (u *User) removeClient(uuid string){
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.hasClient(uuid) {
+		for i,c:=range u.clients {
+			if c==uuid {
+				u.clients= append(u.clients[:i], u.clients[i+1:]...)
+				return
+			}
+		}
+	}
+}
+
+func (u *User) token(uuid string) (*jwt.Token, error) {
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"uuid": uuid,
+		"username": u.Username,
+		"password":u.Password,
+	})
+	return token, nil
 }
 
 
